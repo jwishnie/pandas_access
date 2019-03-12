@@ -8,10 +8,12 @@ except ImportError:
     from io import BytesIO
 
 
-TABLE_RE = re.compile("CREATE TABLE \[(\w+)\]\s+\((.*?\));",
+TABLE_RE = re.compile("CREATE TABLE \[(\w+)\]\s+\((.*?)\);",
                       re.MULTILINE | re.DOTALL)
 
-DEF_RE = re.compile("\s*\[(\w+)\]\s*(.*?),")
+DEF_RE = re.compile("\s*\[(\w+)\]\s*(.*?),?$")
+
+DT_RE = re.compile(r'^(\w+),?')
 
 
 def list_tables(rdb_file, encoding="latin-1"):
@@ -25,16 +27,27 @@ def list_tables(rdb_file, encoding="latin-1"):
     tables = subprocess.check_output(['mdb-tables', rdb_file]).decode(encoding)
     return tables.strip().split(" ")
 
+TYPE_MAP = {
+    'text': np.str_,
+    'numeric': np
+}
 
 def _extract_dtype(data_type):
     # Note, this list is surely incomplete. But, I only had one .mdb file
     # at the time of creation. If you see a new data-type, patch-pull or just
     # open an issue.
     data_type = data_type.lower()
-    if data_type.startswith('double'):
+    m = DT_RE.match(data_type)
+    if m is not None: data_type = m.group(1)
+
+    if data_type == 'numeric' or data_type == 'double' or data_type == 'float' or data_type == 'decimal':
         return np.float_
-    elif data_type.startswith('long'):
+    elif data_type == 'byte' or data_type == 'integer' or data_type.startswith('long'):
         return np.int_
+    elif 'char' in data_type or 'text' in data_type or data_type == 'memo':
+        return np.str_
+    elif 'datetime' in data_type:
+        return np.datetime64
     else:
         return None
 
@@ -59,7 +72,6 @@ def read_schema(rdb_file, encoding='utf8'):
     output = subprocess.check_output(['mdb-schema', rdb_file])
     lines = output.decode(encoding).splitlines()
     schema_ddl = "\n".join(l for l in lines if l and not l.startswith('-'))
-
     schema = {}
     for table, defs in TABLE_RE.findall(schema_ddl):
         schema[table] = _extract_defs(defs)
@@ -112,6 +124,7 @@ def read_table(rdb_file, table_name, *args, **kwargs):
     :return: a pandas `DataFrame` (or, `TextFileReader` if you set
         `chunksize=k`)
     """
+
     if kwargs.pop('converters_from_schema', True):
         specified_dtypes = kwargs.pop('dtype', {})
         schema_encoding = kwargs.pop('schema_encoding', 'utf8')
@@ -122,6 +135,18 @@ def read_table(rdb_file, table_name, *args, **kwargs):
         if dtypes != {}:
             kwargs['dtype'] = dtypes
 
+        # stupid hack to get date columns--should change schema logic
+        date_cols = []
+        for index, (key, val) in enumerate(dtypes.items()):
+            if val == np.datetime64:
+                date_cols.append(index)
+                dtypes[key] = np.str_ # turn back to str for parser!
+
+        if len(date_cols)>0:
+            kwargs['parse_dates'] = date_cols
+            # kwargs['infer_datetime_format'] = True
+        print(dtypes)
+        print(date_cols)
     cmd = ['mdb-export', rdb_file, table_name]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
     return pd.read_csv(proc.stdout, *args, **kwargs)
