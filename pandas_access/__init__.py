@@ -144,9 +144,8 @@ def read_table(rdb_file, table_name, *args, **kwargs):
 
         if len(date_cols)>0:
             kwargs['parse_dates'] = date_cols
-            # kwargs['infer_datetime_format'] = True
-        print(dtypes)
-        print(date_cols)
+            kwargs['infer_datetime_format'] = True
+
     cmd = ['mdb-export', rdb_file, table_name]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
     return pd.read_csv(proc.stdout, *args, **kwargs)
